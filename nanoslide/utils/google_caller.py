@@ -74,16 +74,78 @@ class GoogleCaller:
         return LMResponse(text=text, image=image)
 
     @staticmethod
-    def generate_video(model: str, prompt: str, **kwargs: Any) -> LMResponse:
-        """Generate video using veo model."""
+    def generate_video(
+        model: str,
+        prompt: str,
+        reference_image_path: Path | None = None,
+        **kwargs: Any,
+    ) -> LMResponse:
+        """Generate video using veo model from a single reference image.
+
+        Args:
+            model: Model name to use.
+            prompt: Text prompt for generation.
+            reference_image_path: Optional path to reference image.
+        """
         import time
 
+        print(f"Prompt: {prompt}")
+        print(f"Reference image path: {reference_image_path}")
         client = genai.Client()
+
+        # Convert PIL image into a Google GenAI Part
+        image_part = types.Part.from_bytes(
+            data=reference_image_path.read_bytes(), mime_type="image/png"
+        )
 
         # Start video generation operation
         operation = client.models.generate_videos(
             model=model,
             prompt=prompt,
+            image=image_part.as_image(),
+        )
+
+        # Poll for completion
+        while not operation.done:
+            time.sleep(10)
+            operation = client.operations.get(operation)
+
+        # Get the video result
+        video_bytes = None
+        if operation.response and operation.response.generated_videos:
+            video = operation.response.generated_videos[0]
+            video_bytes = client.files.download(file=video.video)
+
+        return LMResponse(video=video_bytes)
+
+    @staticmethod
+    def generate_video_interpolation(
+        model: str,
+        prompt: str,
+        image1_path: Path,
+        image2_path: Path,
+        **kwargs: Any,
+    ) -> LMResponse:
+        """Generate video using veo model by interpolating between two images.
+
+        Args:
+            model: Model name to use.
+            prompt: Text prompt for generation.
+            image1_path: Path to first image (start frame).
+            image2_path: Path to second image (end frame).
+        """
+        import time
+
+        client = genai.Client()
+
+        # Load both images
+        image1 = PILImage.open(image1_path)
+        image2 = PILImage.open(image2_path)
+
+        # Start video generation operation with two images for interpolation
+        operation = client.models.generate_videos(
+            model=model,
+            contents=[image1, image2, prompt],
         )
 
         # Poll for completion

@@ -3,7 +3,7 @@
 
 def get_video_prompt(
     slide_description: str,
-    duration: int = 5,
+    duration: int = 10,
 ) -> str:
     """Generate the prompt for creating video content from a slide.
 

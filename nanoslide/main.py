@@ -234,9 +234,9 @@ def gen_video(
         typer.Option("--exist", "-e", help="Skip video segments that already exist"),
     ] = False,
 ) -> Path:
-    """Generate video from slides using veo3.
+    """Generate video from slides using veo3 (single image reference method).
 
-    Reads the plan.json and generates video segments.
+    Reads the plan.json and generates video segments from each slide image.
     Output: outputs/<pdf_name>/video/*.mp4
     """
     result_dir = get_output_dir(pdf, output_dir)
@@ -250,14 +250,20 @@ def gen_video(
         typer.echo("Run 'nanoslide plan' first to generate a plan.")
         raise typer.Exit(1)
 
-    typer.echo(f"📋 Reading plan: {plan_file}")
+    # Check if slides exist
+    slides_dir = result_dir / "slide_pieces"
+    if not slides_dir.exists():
+        typer.echo(f"Error: Slides directory not found: {slides_dir}", err=True)
+        typer.echo("Run 'nanoslide gen-slide' first to generate slides.")
+        raise typer.Exit(1)
+
     plan_content = json.loads(plan_file.read_text())
 
     # Create video directory
     video_dir = result_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    typer.echo("🎬 Generating video...")
+    typer.echo("🎬 Generating video from slide images using veo3...")
 
     # Parse plan and generate video segments
     sorted_keys = sorted(
@@ -275,14 +281,21 @@ def gen_video(
             typer.echo(f"  ⏭️  Skipping video segment {slide_num} (already exists)")
             continue
 
-        slide_content = plan_content[key]
-        typer.echo(f"  Generating video segment {slide_num}/{total_slides}...")
+        # Get corresponding slide image
+        slide_image_path = slides_dir / f"slide_{key}.png"
+        if not slide_image_path.exists():
+            typer.echo(f"  ⚠️  Warning: Slide image not found: {slide_image_path}")
+            continue
 
-        video_prompt = get_video_prompt(slide_description=slide_content)
+        slide_content = plan_content[key]
+        typer.echo(
+            f"  Generating video segment {slide_num}/{total_slides} from {slide_image_path.name}..."
+        )
 
         response = GoogleCaller.generate_video(
-            model="veo-2.0-generate-001",
-            prompt=video_prompt,
+            model="veo-3.1-fast-generate-preview",
+            prompt=slide_content,
+            reference_image_path=slide_image_path,
         )
 
         if response.video:
@@ -292,6 +305,112 @@ def gen_video(
             typer.echo(f"    ⚠️  Warning: No video generated for segment {slide_num}")
 
     typer.echo(f"✅ Video segments saved to: {video_dir}")
+    return video_dir
+
+
+@app.command()
+def gen_video_interp(
+    pdf: Annotated[Path, typer.Argument(help="Path to the source PDF file")],
+    output_dir: Annotated[
+        Path, typer.Option("--output", "-o", help="Output directory")
+    ] = Path("outputs"),
+    plan_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--plan", help="Path to existing plan.json (auto-detected if not provided)"
+        ),
+    ] = None,
+    exist: Annotated[
+        bool,
+        typer.Option("--exist", "-e", help="Skip video segments that already exist"),
+    ] = False,
+) -> Path:
+    """Generate video by interpolating between consecutive slide images.
+
+    Reads consecutive pairs of slide images and generates interpolation videos.
+    Output: outputs/<pdf_name>/video_interp/*.mp4
+    """
+    result_dir = get_output_dir(pdf, output_dir)
+
+    # Find plan file
+    if plan_file is None:
+        plan_file = result_dir / "plan.json"
+
+    if not plan_file.exists():
+        typer.echo(f"Error: Plan file not found: {plan_file}", err=True)
+        typer.echo("Run 'nanoslide plan' first to generate a plan.")
+        raise typer.Exit(1)
+
+    # Check if slides exist
+    slides_dir = result_dir / "slide_pieces"
+    if not slides_dir.exists():
+        typer.echo(f"Error: Slides directory not found: {slides_dir}", err=True)
+        typer.echo("Run 'nanoslide gen-slide' first to generate slides.")
+        raise typer.Exit(1)
+
+    typer.echo(f"📋 Reading plan: {plan_file}")
+    plan_content = json.loads(plan_file.read_text())
+
+    # Create video directory for interpolation
+    video_dir = result_dir / "video_interp"
+    video_dir.mkdir(parents=True, exist_ok=True)
+
+    typer.echo("🎬 Generating interpolation videos between consecutive slides...")
+
+    # Parse plan and generate interpolation videos
+    sorted_keys = sorted(
+        plan_content.keys(),
+        key=lambda x: int(x[1:]) if x[1:].isdigit() else 0,
+    )
+
+    # Generate videos for consecutive pairs
+    for i in range(len(sorted_keys) - 1):
+        key1 = sorted_keys[i]
+        key2 = sorted_keys[i + 1]
+        slide_num1 = int(key1[1:]) if key1[1:].isdigit() else 1
+        slide_num2 = int(key2[1:]) if key2[1:].isdigit() else 2
+
+        video_path = video_dir / f"interp_{slide_num1}_to_{slide_num2}.mp4"
+
+        # Check if already exists
+        if exist and video_path.exists():
+            typer.echo(
+                f"  ⏭️  Skipping interpolation {slide_num1}→{slide_num2} (already exists)"
+            )
+            continue
+
+        # Get corresponding slide images
+        slide1_path = slides_dir / f"slide_{key1}.png"
+        slide2_path = slides_dir / f"slide_{key2}.png"
+
+        if not slide1_path.exists() or not slide2_path.exists():
+            typer.echo(
+                f"  ⚠️  Warning: Slide images not found: {slide1_path.name} or {slide2_path.name}"
+            )
+            continue
+
+        typer.echo(f"  Generating interpolation video {slide_num1}→{slide_num2}...")
+
+        # Use prompt from the second slide
+        slide_content = plan_content[key2]
+        video_prompt = get_video_prompt(slide_description=slide_content)
+
+        response = GoogleCaller.generate_video_interpolation(
+            model="veo-2.0-generate-001",
+            prompt=video_prompt,
+            image1_path=slide1_path,
+            image2_path=slide2_path,
+        )
+
+        if response.video:
+            video_path.write_bytes(response.video)
+            typer.echo(f"    ✅ Saved: {video_path}")
+        else:
+            typer.echo(
+                f"    ⚠️  Warning: No video generated for interpolation {slide_num1}→{slide_num2}"
+            )
+
+    typer.echo(f"✅ Interpolation videos saved to: {video_dir}")
     return video_dir
 
 
@@ -307,6 +426,13 @@ def pipe(
     video: Annotated[
         bool, typer.Option("--video", "-v", help="Also generate video from slides")
     ] = False,
+    video_interp: Annotated[
+        bool,
+        typer.Option(
+            "--video-interp",
+            help="Use interpolation method for video (default: single image reference)",
+        ),
+    ] = False,
     exist: Annotated[
         bool, typer.Option("--exist", "-e", help="Skip steps if output already exists")
     ] = False,
@@ -318,7 +444,7 @@ def pipe(
       - plan.json
       - slide_pieces/*.png
       - presentation.pptx
-      - video/*.mp4 (if --video is set)
+      - video/*.mp4 or video_interp/*.mp4 (if --video is set)
     """
     typer.echo("🚀 Starting nanoslide pipeline...")
     typer.echo("=" * 50)
@@ -333,8 +459,14 @@ def pipe(
 
     # Step 3: Generate video (optional)
     if video:
-        typer.echo("\n🎬 STEP 3: Generating video...")
-        gen_video(pdf=pdf, output_dir=output_dir, plan_file=plan_file, exist=exist)
+        if video_interp:
+            typer.echo("\n🎬 STEP 3: Generating interpolation videos...")
+            gen_video_interp(
+                pdf=pdf, output_dir=output_dir, plan_file=plan_file, exist=exist
+            )
+        else:
+            typer.echo("\n🎬 STEP 3: Generating videos from slide images...")
+            gen_video(pdf=pdf, output_dir=output_dir, plan_file=plan_file, exist=exist)
 
     typer.echo("\n" + "=" * 50)
     typer.echo("✨ Pipeline complete!")
