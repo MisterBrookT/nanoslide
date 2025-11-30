@@ -7,7 +7,7 @@ from typing import Annotated
 
 import typer
 
-from nanoslide.prompts import get_plan_prompt, get_slide_prompt, get_video_prompt
+from nanoslide.prompts import get_plan_prompt, get_slide_prompt
 from nanoslide.utils.google_caller import GoogleCaller
 from nanoslide.utils.io import extract_from_markdown
 
@@ -37,7 +37,9 @@ def _create_pptx(slides_dir: Path, pptx_path: Path) -> None:
     # Find all slide images
     slide_files = sorted(
         slides_dir.glob("slide_*.png"),
-        key=lambda x: int(x.stem.split("_p")[-1]) if "_p" in x.stem else 0,
+        key=lambda x: int(x.stem.split("_p")[-1])
+        if "_p" in x.stem and x.stem.split("_p")[-1].isdigit()
+        else 0,
     )
 
     if not slide_files:
@@ -165,24 +167,29 @@ def gen_slide(
 
     typer.echo("🎨 Generating slides...")
 
-    # Parse plan and generate slides
-    sorted_keys = sorted(
-        plan_content.keys(),
-        key=lambda x: int(x[1:]) if x[1:].isdigit() else 0,
+    # Parse plan and generate slides - only process sX keys
+    slide_keys = [k for k in plan_content.keys() if k.startswith("s")]
+    sorted_slide_keys = sorted(
+        slide_keys,
+        key=lambda x: int(x[1:]) if len(x) > 1 and x[1:].isdigit() else 0,
     )
 
     previous_slide_path = None
-    for slide_num in sorted_keys:
-        slide_path = slides_dir / f"slide_{slide_num}.png"
+    for slide_key in sorted_slide_keys:
+        # Extract slide number from "sX" format
+        slide_num = (
+            int(slide_key[1:]) if len(slide_key) > 1 and slide_key[1:].isdigit() else 0
+        )
+        slide_path = slides_dir / f"slide_p{slide_num}.png"
 
         # Check if already exists
         if exist and slide_path.exists():
-            typer.echo(f"  ⏭️  Skipping slide {slide_num} (already exists)")
+            typer.echo(f"  ⏭️  Skipping slide {slide_key} (already exists)")
             previous_slide_path = slide_path
             continue
 
-        slide_content = plan_content[slide_num]
-        typer.echo(f"  Generating slide {slide_num}...")
+        slide_content = plan_content[slide_key]
+        typer.echo(f"  Generating slide {slide_key}...")
 
         # Check if previous slide exists for style reference
         has_reference = previous_slide_path is not None and previous_slide_path.exists()
@@ -195,7 +202,7 @@ def gen_slide(
             slide_content=slide_content,
             has_reference=has_reference,
         )
-
+        # typer.echo(f"genering slide {slide_key}  with the prompt: {slide_prompt}")
         response = GoogleCaller.generate_image(
             model="gemini-3-pro-image-preview",
             prompt=slide_prompt,
@@ -234,97 +241,6 @@ def gen_video(
         typer.Option("--exist", "-e", help="Skip video segments that already exist"),
     ] = False,
 ) -> Path:
-    """Generate video from slides using veo3 (single image reference method).
-
-    Reads the plan.json and generates video segments from each slide image.
-    Output: outputs/<pdf_name>/video/*.mp4
-    """
-    result_dir = get_output_dir(pdf, output_dir)
-
-    # Find plan file
-    if plan_file is None:
-        plan_file = result_dir / "plan.json"
-
-    if not plan_file.exists():
-        typer.echo(f"Error: Plan file not found: {plan_file}", err=True)
-        typer.echo("Run 'nanoslide plan' first to generate a plan.")
-        raise typer.Exit(1)
-
-    # Check if slides exist
-    slides_dir = result_dir / "slide_pieces"
-    if not slides_dir.exists():
-        typer.echo(f"Error: Slides directory not found: {slides_dir}", err=True)
-        typer.echo("Run 'nanoslide gen-slide' first to generate slides.")
-        raise typer.Exit(1)
-
-    plan_content = json.loads(plan_file.read_text())
-
-    # Create video directory
-    video_dir = result_dir / "video"
-    video_dir.mkdir(parents=True, exist_ok=True)
-
-    typer.echo("🎬 Generating video from slide images using veo3...")
-
-    # Parse plan and generate video segments
-    sorted_keys = sorted(
-        plan_content.keys(),
-        key=lambda x: int(x[1:]) if x[1:].isdigit() else 0,
-    )
-    total_slides = len(sorted_keys)
-
-    for key in sorted_keys:
-        slide_num = int(key[1:]) if key[1:].isdigit() else 1
-        video_path = video_dir / f"segment_{slide_num}.mp4"
-
-        # Check if already exists
-        if exist and video_path.exists():
-            typer.echo(f"  ⏭️  Skipping video segment {slide_num} (already exists)")
-            continue
-
-        # Get corresponding slide image
-        slide_image_path = slides_dir / f"slide_{key}.png"
-        if not slide_image_path.exists():
-            typer.echo(f"  ⚠️  Warning: Slide image not found: {slide_image_path}")
-            continue
-
-        slide_content = plan_content[key]
-        typer.echo(
-            f"  Generating video segment {slide_num}/{total_slides} from {slide_image_path.name}..."
-        )
-
-        response = GoogleCaller.generate_video(
-            model="veo-3.1-fast-generate-preview",
-            prompt=slide_content,
-            reference_image_path=slide_image_path,
-        )
-
-        if response.video:
-            video_path.write_bytes(response.video)
-            typer.echo(f"    ✅ Saved: {video_path}")
-        else:
-            typer.echo(f"    ⚠️  Warning: No video generated for segment {slide_num}")
-
-    typer.echo(f"✅ Video segments saved to: {video_dir}")
-    return video_dir
-
-
-@app.command()
-def gen_video_interp(
-    pdf: Annotated[Path, typer.Argument(help="Path to the source PDF file")],
-    output_dir: Annotated[
-        Path, typer.Option("--output", "-o", help="Output directory")
-    ] = Path("outputs"),
-    plan_file: Annotated[
-        Path | None,
-        typer.Option(
-            "--plan", help="Path to existing plan.json (auto-detected if not provided)"
-        ),
-    ] = None,
-    exist: Annotated[
-        bool,
-        typer.Option("--exist", "-e", help="Skip video segments that already exist"),
-    ] = False,
-) -> Path:
     """Generate video by interpolating between consecutive slide images.
 
     Reads consecutive pairs of slide images and generates interpolation videos.
@@ -338,7 +254,6 @@ def gen_video_interp(
 
     if not plan_file.exists():
         typer.echo(f"Error: Plan file not found: {plan_file}", err=True)
-        typer.echo("Run 'nanoslide plan' first to generate a plan.")
         raise typer.Exit(1)
 
     # Check if slides exist
@@ -352,36 +267,39 @@ def gen_video_interp(
     plan_content = json.loads(plan_file.read_text())
 
     # Create video directory for interpolation
-    video_dir = result_dir / "video_interp"
+    video_dir = result_dir / "video"
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    typer.echo("🎬 Generating interpolation videos between consecutive slides...")
+    typer.echo("🎬 Generating interpolation videos from vX keys...")
 
-    # Parse plan and generate interpolation videos
-    sorted_keys = sorted(
-        plan_content.keys(),
-        key=lambda x: int(x[1:]) if x[1:].isdigit() else 0,
+    # Parse plan and generate interpolation videos - only process vX keys
+    video_keys = [k for k in plan_content.keys() if k.startswith("v")]
+    sorted_video_keys = sorted(
+        video_keys,
+        key=lambda x: int(x[1:]) if len(x) > 1 and x[1:].isdigit() else 0,
     )
 
-    # Generate videos for consecutive pairs
-    for i in range(len(sorted_keys) - 1):
-        key1 = sorted_keys[i]
-        key2 = sorted_keys[i + 1]
-        slide_num1 = int(key1[1:]) if key1[1:].isdigit() else 1
-        slide_num2 = int(key2[1:]) if key2[1:].isdigit() else 2
+    # Generate videos for each vX key
+    for video_key in sorted_video_keys:
+        # Extract video number from "vX" format
+        video_num = (
+            int(video_key[1:]) if len(video_key) > 1 and video_key[1:].isdigit() else 0
+        )
 
-        video_path = video_dir / f"interp_{slide_num1}_to_{slide_num2}.mp4"
+        # vX corresponds to transition between sX and s(X+1)
+        slide_num1 = video_num
+        slide_num2 = video_num + 1
+
+        video_path = video_dir / f"segment_{video_num}.mp4"
 
         # Check if already exists
         if exist and video_path.exists():
-            typer.echo(
-                f"  ⏭️  Skipping interpolation {slide_num1}→{slide_num2} (already exists)"
-            )
+            typer.echo(f"  ⏭️  Skipping video {video_key} (already exists)")
             continue
 
-        # Get corresponding slide images
-        slide1_path = slides_dir / f"slide_{key1}.png"
-        slide2_path = slides_dir / f"slide_{key2}.png"
+        # Get corresponding slide images (sX and s(X+1))
+        slide1_path = slides_dir / f"slide_p{slide_num1}.png"
+        slide2_path = slides_dir / f"slide_p{slide_num2}.png"
 
         if not slide1_path.exists() or not slide2_path.exists():
             typer.echo(
@@ -389,15 +307,23 @@ def gen_video_interp(
             )
             continue
 
-        typer.echo(f"  Generating interpolation video {slide_num1}→{slide_num2}...")
+        typer.echo(
+            f"  Generating video {video_key} (transition s{slide_num1} → s{slide_num2})..."
+        )
 
-        # Use prompt from the second slide
-        slide_content = plan_content[key2]
-        video_prompt = get_video_prompt(slide_description=slide_content)
+        # Use video description directly from plan_content["vX"]
+        video_content = plan_content[video_key]
+        # video_prompt = get_video_prompt(slide_description=video_content)
 
+        typer.echo(
+            f"  Generating video {video_key} (transition s{slide_num1} → s{slide_num2}) with the prompt: {video_content} and the two images: {slide1_path} and {slide2_path}"
+        )
+
+        #  model="veo-3.1-fast-generate-preview",
+        # model = "veo-3.1-generate-preview"
         response = GoogleCaller.generate_video_interpolation(
-            model="veo-2.0-generate-001",
-            prompt=video_prompt,
+            model="veo-3.1-generate-preview",
+            prompt=video_content,
             image1_path=slide1_path,
             image2_path=slide2_path,
         )
@@ -406,9 +332,7 @@ def gen_video_interp(
             video_path.write_bytes(response.video)
             typer.echo(f"    ✅ Saved: {video_path}")
         else:
-            typer.echo(
-                f"    ⚠️  Warning: No video generated for interpolation {slide_num1}→{slide_num2}"
-            )
+            typer.echo(f"    ⚠️  Warning: No video generated for {video_key}")
 
     typer.echo(f"✅ Interpolation videos saved to: {video_dir}")
     return video_dir
@@ -425,14 +349,7 @@ def pipe(
     ] = None,
     video: Annotated[
         bool, typer.Option("--video", "-v", help="Also generate video from slides")
-    ] = False,
-    video_interp: Annotated[
-        bool,
-        typer.Option(
-            "--video-interp",
-            help="Use interpolation method for video (default: single image reference)",
-        ),
-    ] = False,
+    ] = True,
     exist: Annotated[
         bool, typer.Option("--exist", "-e", help="Skip steps if output already exists")
     ] = False,
@@ -459,14 +376,12 @@ def pipe(
 
     # Step 3: Generate video (optional)
     if video:
-        if video_interp:
-            typer.echo("\n🎬 STEP 3: Generating interpolation videos...")
-            gen_video_interp(
-                pdf=pdf, output_dir=output_dir, plan_file=plan_file, exist=exist
-            )
-        else:
-            typer.echo("\n🎬 STEP 3: Generating videos from slide images...")
-            gen_video(pdf=pdf, output_dir=output_dir, plan_file=plan_file, exist=exist)
+        typer.echo("\n🎬 STEP 3: Generating interpolation videos...")
+        gen_video(pdf=pdf, output_dir=output_dir, plan_file=plan_file, exist=exist)
+
+    # Step 4: Fuse slides and video
+    typer.echo("\n🔗 STEP 4: Fusing slides and video...")
+    fuse(pdf=pdf, output_dir=output_dir, slides=True, video=True)
 
     typer.echo("\n" + "=" * 50)
     typer.echo("✨ Pipeline complete!")
@@ -474,10 +389,150 @@ def pipe(
     typer.echo(f"📁 Output directory: {result_dir}")
 
 
+def _merge_videos(video_files: list[Path], output_path: Path) -> None:
+    """Merge multiple video files into a single video.
+
+    Args:
+        video_files: List of video file paths in order.
+        output_path: Path to save the merged video.
+    """
+    try:
+        # Optional dependency: moviepy for video merging
+        from moviepy.editor import VideoFileClip, concatenate_videoclips  # type: ignore
+    except ImportError:
+        # Fallback to ffmpeg if moviepy is not available
+        import subprocess
+        import tempfile
+
+        # Create a temporary file list for ffmpeg concat
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            for video_file in video_files:
+                f.write(f"file '{video_file.absolute()}'\n")
+            concat_file = Path(f.name)
+
+        try:
+            # Use ffmpeg to concatenate videos
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_file),
+                    "-c",
+                    "copy",
+                    str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            typer.echo(f"    ✅ Merged {len(video_files)} videos using ffmpeg")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            typer.echo(f"  ⚠️  Error merging videos: {e}", err=True)
+            typer.echo(
+                "  💡 Install moviepy (pip install moviepy) or ffmpeg for video merging",
+                err=True,
+            )
+            raise typer.Exit(1)
+        finally:
+            concat_file.unlink()
+        return
+
+    # Use moviepy to merge videos
+    clips = []
+    for video_file in video_files:
+        typer.echo(f"    Loading: {video_file.name}")
+        clip = VideoFileClip(str(video_file))
+        clips.append(clip)
+
+    typer.echo(f"    Concatenating {len(clips)} video clips...")
+    final_clip = concatenate_videoclips(clips, method="compose")
+    final_clip.write_videofile(
+        str(output_path),
+        codec="libx264",
+        audio_codec="aac",
+        temp_audiofile="temp-audio.m4a",
+        remove_temp=True,
+    )
+
+    # Clean up
+    for clip in clips:
+        clip.close()
+    final_clip.close()
+
+    typer.echo(f"    ✅ Merged {len(video_files)} videos using moviepy")
+
+
 @app.command()
-def version() -> None:
-    """Show version information."""
-    typer.echo("nanoslide v0.1.0")
+def fuse(
+    pdf: Annotated[Path, typer.Argument(help="Path to the source PDF file")],
+    output_dir: Annotated[
+        Path, typer.Option("--output", "-o", help="Output directory")
+    ] = Path("outputs"),
+    slides: Annotated[
+        bool, typer.Option("--slides", "-s", help="Fuse slides into PowerPoint")
+    ] = True,
+    video: Annotated[
+        bool, typer.Option("--video", "-v", help="Fuse video segments into one video")
+    ] = True,
+) -> None:
+    """Fuse slides and/or video segments into final outputs.
+
+    Merges individual slide images into a PowerPoint presentation and/or
+    merges video segments into a single complete video.
+    Output:
+      - outputs/<pdf_name>/presentation.pptx (if --slides)
+      - outputs/<pdf_name>/video/fused.mp4 (if --video)
+    """
+    result_dir = get_output_dir(pdf, output_dir)
+
+    typer.echo("🔗 Fusing outputs...")
+    typer.echo("=" * 50)
+
+    # Fuse slides into PowerPoint
+    if slides:
+        slides_dir = result_dir / "slide_pieces"
+        pptx_path = result_dir / "presentation.pptx"
+
+        if not slides_dir.exists():
+            typer.echo(f"  ⚠️  Slides directory not found: {slides_dir}")
+            typer.echo("  Run 'nanoslide gen-slide' first to generate slides.")
+        else:
+            typer.echo("\n📑 Fusing slides into PowerPoint...")
+            _create_pptx(slides_dir, pptx_path)
+
+    # Fuse video segments into one video
+    if video:
+        video_dir = result_dir / "video"
+        fused_video_path = video_dir / "fused.mp4"
+
+        if not video_dir.exists():
+            typer.echo(f"  ⚠️  Video directory not found: {video_dir}")
+            typer.echo("  Run 'nanoslide gen-video' first to generate video segments.")
+        else:
+            # Find all video segment files
+            video_files = sorted(
+                video_dir.glob("segment_*.mp4"),
+                key=lambda x: int(x.stem.split("_")[-1])
+                if x.stem.split("_")[-1].isdigit()
+                else 0,
+            )
+
+            if not video_files:
+                typer.echo(f"  ⚠️  No video segments found in {video_dir}")
+            else:
+                typer.echo(f"\n🎬 Fusing {len(video_files)} video segments...")
+                for video_file in video_files:
+                    typer.echo(f"  Found: {video_file.name}")
+
+                _merge_videos(video_files, fused_video_path)
+                typer.echo(f"✅ Fused video saved to: {fused_video_path}")
+
+    typer.echo("\n" + "=" * 50)
+    typer.echo("✨ Fusion complete!")
+    typer.echo(f"📁 Output directory: {result_dir}")
 
 
 if __name__ == "__main__":

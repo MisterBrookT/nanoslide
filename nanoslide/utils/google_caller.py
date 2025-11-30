@@ -138,18 +138,25 @@ class GoogleCaller:
 
         client = genai.Client()
 
-        # Load both images
-        image1 = PILImage.open(image1_path)
-        image2 = PILImage.open(image2_path)
+        # Convert both images into Google GenAI Parts
+        image1_part = types.Part.from_bytes(
+            data=image1_path.read_bytes(), mime_type="image/png"
+        )
+        image2_part = types.Part.from_bytes(
+            data=image2_path.read_bytes(), mime_type="image/png"
+        )
 
         # Start video generation operation with two images for interpolation
         operation = client.models.generate_videos(
             model=model,
-            contents=[image1, image2, prompt],
+            prompt=prompt,
+            image=image1_part.as_image(),
+            config=types.GenerateVideosConfig(last_frame=image2_part.as_image()),
         )
 
         # Poll for completion
         while not operation.done:
+            print("Waiting for video generation to complete...")
             time.sleep(10)
             operation = client.operations.get(operation)
 

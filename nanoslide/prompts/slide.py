@@ -21,18 +21,18 @@ STYLE REFERENCE:
 A reference image is provided. Match its artistic style, character design, color palette, and overall visual language. Only the scene content may differ.
 """
 
-    prompt = f"""Create an image based on the scene below.
+    prompt = f"""Create a 16:9 illustration of the following scene in the **official Zootopia (Disney 2016) art style**.
 
-{reference_instruction}SCENE:
+STYLE REQUIREMENTS:
+- Soft, warm, natural lighting (not neon, not sci-fi, not holograms)
+- No futuristic UI, no cyberpunk elements, no glowing screens
+- Characters must follow Zootopia proportions, textures, and expressions
+- Environments must match Zootopia’s grounded, semi-realistic world
+
+{reference_instruction}
+SCENE DESCRIPTION:
 {slide_content}
 
-REQUIREMENTS:
-- Clear, vivid illustration of the scene.
-- Aspect ratio 16:9.
-- Characters and actions must be clearly visible.
-
 OUTPUT:
-One high-quality image.
-"""
-
+One high-quality Zootopia-style image."""
     return prompt
