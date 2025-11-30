@@ -1,2 +1,6 @@
-
 .python-version
+__pycache__/
+nanoslide.egg-info/
+
+outputs/
+tmp/

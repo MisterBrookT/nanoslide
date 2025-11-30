@@ -1,14 +1,25 @@
 [project]
 name = "nanoslide"
 version = "0.1.0"
-description = "Add your description here"
+description = "Transform PDFs into engaging slide presentations and videos"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "google-genai>=1.52.0",
     "pillow>=12.0.0",
+    "python-pptx>=1.0.0",
     "typer>=0.20.0",
 ]
+
+[tool.setuptools]
+packages = ["nanoslide"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+nanoslide = "nanoslide.main:app"
 
 [dependency-groups]
 dev = [
